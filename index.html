@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LaunchMine v1.0 — Discover What to Launch First</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: { 50: '#eef2ff', 500: '#6366f1', 600: '#4f46e5', 700: '#4338ca' },
+            dark: { bg: '#090d16', card: '#111827', border: '#1f2937', hover: '#1e293b' }
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="bg-[#090d16] text-slate-100 min-h-screen antialiased">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo } = React;
+
+    function calculateLaunchScore(readiness, monetization, effort, confidence) {
+      const bounded = (val) => Math.max(0, Math.min(100, val || 0));
+      const r = bounded(readiness);
+      const m = bounded(monetization);
+      const e = bounded(effort);
+      const c = bounded(confidence);
+      const score = Math.round(0.35 * r + 0.35 * m + 0.20 * (100 - e) + 0.10 * c);
+      return Math.max(0, Math.min(100, score));
+    }
+
+    const INITIAL_PROJECTS = [
+      {
+        id: 'demo-1',
+        name: 'Job Application Autofill Extension',
+        sourceType: 'DEMO',
+        readiness: 88,
+        monetization: 82,
+        effort: 20,
+        confidence: 90,
+        model: 'Paid Browser Extension',
+        suggestedPrice: '$15/mo',
+        launchTime: '3-5 Days',
+        blocker: 'Webstore Packaging & Stripe Webhook',
+        evidence: [
+          { type: 'OBSERVED', tag: '[manifest.json]', text: 'Manifest v3 and background service worker detected' },
+          { type: 'OBSERVED', tag: '[Popup UI]', text: 'Complete React popup with form field detectors' },
+          { type: 'INFERRED', tag: '[Architecture]', text: 'High recurring utility for active job seekers' },
+          { type: 'ASSUMPTION', tag: '[Pricing]', text: 'Users will pay $15/month during active job hunt' }
+        ],
+        marketValScore: 84,
+        valStatus: 'STRONG SIGNAL',
+        gate: 'READY FOR BETA',
+        scope: {
+          built: ['Autofill DOM scripts', 'Profile data storage', 'Popup settings UI'],
+          required: ['Chrome Web Store developer account setup', 'Stripe checkout link'],
+          wait: ['Team sharing', 'Multi-resume switcher', 'Advanced analytics']
+        }
+      },
+      {
+        id: 'demo-2',
+        name: 'JSON Schema Cleanup Utility',
+        sourceType: 'DEMO',
+        readiness: 94,
+        monetization: 68,
+        effort: 10,
+        confidence: 95,
+        model: 'Developer Tool / Metered API',
+        suggestedPrice: '$9/mo or $29 lifetime',
+        launchTime: '1-2 Days',
+        blocker: 'API Key Licensing Gateway',
+        evidence: [
+          { type: 'OBSERVED', tag: '[CLI script]', text: 'High-performance Go / Rust CLI executable' },
+          { type: 'OBSERVED', tag: '[Tests]', text: '18 passing integration unit tests' },
+          { type: 'INFERRED', tag: '[Dev Utility]', text: 'Fits developer utility or metered API integration' },
+          { type: 'ASSUMPTION', tag: '[Market]', text: 'Engineers prefer one-time license over subscription' }
+        ],
+        marketValScore: 72,
+        valStatus: 'PROMISING',
+        gate: 'READY TO SELL',
+        scope: {
+          built: ['CLI engine', 'Schema transformer', 'Regex cleaner'],
+          required: ['GitHub Release page', 'Polar.sh / Lemon Squeezy license key hook'],
+          wait: ['Cloud web UI', 'Webhook notifications']
+        }
+      }
+    ];
+
+    function App() {
+      const [projects, setProjects] = useState(() => {
+        const saved = localStorage.getItem('launchmine_v1_projects');
+        return saved ? JSON.parse(saved) : INITIAL_PROJECTS;
+      });
+      const [selectedProject, setSelectedProject] = useState(null);
+      const [auditModalOpen, setAuditModalOpen] = useState(false);
+
+      useEffect(() => {
+        localStorage.setItem('launchmine_v1_projects', JSON.stringify(projects));
+      }, [projects]);
+
+      const sortedProjects = useMemo(() => {
+        return [...projects].sort((a, b) => {
+          const scoreA = calculateLaunchScore(a.readiness, a.monetization, a.effort, a.confidence);
+          const scoreB = calculateLaunchScore(b.readiness, b.monetization, b.effort, b.confidence);
+          return scoreB - scoreA;
+        });
+      }, [projects]);
+
+      const exportBackupJSON = () => {
+        const payload = {
+          version: 'LaunchMine-v1.0',
+          timestamp: new Date().toISOString(),
+          projects: projects
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `launchmine-backup-${new Date().toISOString().slice(0, 10)}.json`;
+        a.click();
+      };
+
+      const handleImportJSON = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            const data = JSON.parse(event.target.result);
+            if (data.projects && Array.isArray(data.projects)) {
+              setProjects(data.projects);
+              alert('Portfolio successfully restored!');
+            } else {
+              alert('Invalid backup file structure.');
+            }
+          } catch (err) {
+            alert('Error parsing JSON backup.');
+          }
+        };
+        reader.readAsText(file);
+      };
+
+      return (
+        <div className="max-w-6xl mx-auto px-4 py-8">
+          <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-6 border-b border-dark-border">
+            <div>
+              <div className="flex items-center gap-3">
+                <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                  <span className="text-brand-500">⚡</span> LaunchMine
+                </h1>
+                <span className="text-xs px-2 py-0.5 rounded bg-brand-500/20 text-brand-400 font-mono border border-brand-500/30">v1.0</span>
+                <span className="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-mono">Engine v1.0</span>
+              </div>
+              <p className="text-sm text-slate-400 mt-1">
+                Your old work may already contain your next product.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={() => setAuditModalOpen(true)}
+                className="text-xs px-3 py-1.5 rounded-lg bg-dark-card border border-dark-border hover:bg-dark-hover text-slate-300 transition"
+              >
+                Truth & Methodology
+              </button>
+              <button 
+                onClick={exportBackupJSON}
+                className="text-xs px-3 py-1.5 rounded-lg bg-dark-card border border-dark-border hover:bg-dark-hover text-slate-300 transition"
+              >
+                Export Backup
+              </button>
+              <label className="text-xs px-3 py-1.5 rounded-lg bg-dark-card border border-dark-border hover:bg-dark-hover text-slate-300 cursor-pointer transition">
+                Import
+                <input type="file" accept=".json" onChange={handleImportJSON} className="hidden" />
+              </label>
+            </div>
+          </header>
+
+          <div className="my-6 p-3 rounded-lg bg-dark-card border border-dark-border flex items-center justify-between text-xs font-mono text-slate-400 overflow-x-auto">
+            <span className="text-brand-400 font-semibold">1. Discover</span>
+            <span>→</span>
+            <span className="text-brand-400 font-semibold">2. Analyze</span>
+            <span>→</span>
+            <span>3. Unify</span>
+            <span>→</span>
+            <span className="text-emerald-400 font-semibold">4. Rank</span>
+            <span>→</span>
+            <span>5. Validate</span>
+            <span>→</span>
+            <span className="text-indigo-400 font-semibold">6. Launch Kit</span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+            <button 
+              onClick={() => alert('Scan public repositories via unauthenticated GitHub API.')}
+              className="p-4 rounded-xl bg-dark-card border border-dark-border hover:border-brand-500/50 text-left transition group"
+            >
+              <div className="text-sm font-semibold text-white group-hover:text-brand-400 flex items-center justify-between">
+                <span>Scan Public GitHub</span>
+                <span>↗</span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">Discover public repositories without cloning or OAuth.</p>
+            </button>
+
+            <button 
+              onClick={() => alert('Paste code files, README, or package.json for deterministic parsing.')}
+              className="p-4 rounded-xl bg-dark-card border border-dark-border hover:border-brand-500/50 text-left transition group"
+            >
+              <div className="text-sm font-semibold text-white group-hover:text-brand-400 flex items-center justify-between">
+                <span>Analyze Existing Project</span>
+                <span>↗</span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">Paste code snippets, manifests, or local files.</p>
+            </button>
+
+            <button 
+              onClick={() => alert('Paste ChatGPT or Claude transcripts to extract product specs.')}
+              className="p-4 rounded-xl bg-dark-card border border-dark-border hover:border-brand-500/50 text-left transition group"
+            >
+              <div className="text-sm font-semibold text-white group-hover:text-brand-400 flex items-center justify-between">
+                <span>Analyze AI Conversation</span>
+                <span>↗</span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">Turn old AI conversation specs into launch plans.</p>
+            </button>
+          </div>
+
+          {sortedProjects.length > 0 && (
+            <div className="mb-8 p-6 rounded-2xl bg-gradient-to-r from-brand-900/30 via-dark-card to-dark-card border border-brand-500/30">
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 uppercase tracking-wider">
+                      #1 Recommended Opportunity
+                    </span>
+                    <span className="text-xs text-slate-400">({sortedProjects[0].sourceType})</span>
+                  </div>
+                  <h2 className="text-xl font-bold text-white mt-1">{sortedProjects[0].name}</h2>
+                  <p className="text-xs text-slate-300 mt-1">
+                    <strong className="text-slate-200">Recommended Model:</strong> {sortedProjects[0].model} • <strong className="text-slate-200">Suggested Price:</strong> {sortedProjects[0].suggestedPrice}
+                  </p>
+                  <p className="text-xs text-slate-400 mt-1">
+                    <strong className="text-red-400">Primary Blocker:</strong> {sortedProjects[0].blocker}
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-4">
+                  <div className="text-center bg-dark-bg p-3 rounded-xl border border-dark-border min-w-[90px]">
+                    <div className="text-2xl font-black text-brand-400">
+                      {calculateLaunchScore(sortedProjects[0].readiness, sortedProjects[0].monetization, sortedProjects[0].effort, sortedProjects[0].confidence)}
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-400 uppercase">Launch Score</div>
+                  </div>
+                  <button 
+                    onClick={() => setSelectedProject(sortedProjects[0])}
+                    className="px-4 py-2.5 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-semibold text-xs transition shadow-lg shadow-brand-500/20"
+                  >
+                    Build Launch Kit
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="space-y-4">
+            <div className="flex justify-between items-center">
+              <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-400 font-mono">
+                Opportunity Queue ({projects.length})
+              </h3>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4">
+              {sortedProjects.map((p) => {
+                const score = calculateLaunchScore(p.readiness, p.monetization, p.effort, p.confidence);
+                return (
+                  <div 
+                    key={p.id}
+                    onClick={() => setSelectedProject(p)}
+                    className="p-5 rounded-xl bg-dark-card border border-dark-border hover:border-slate-600 cursor-pointer transition flex flex-col md:flex-row justify-between items-start md:items-center gap-4"
+                  >
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-white text-base">{p.name}</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 font-mono">
+                          {p.sourceType}
+                        </span>
+                      </div>
+                      <div className="text-xs text-slate-400 mt-2 flex flex-wrap gap-4 font-mono">
+                        <span>Readiness: <strong className="text-slate-200">{p.readiness}%</strong></span>
+                        <span>Monetization: <strong className="text-slate-200">{p.monetization}%</strong></span>
+                        <span>Effort: <strong className="text-slate-200">{p.effort}%</strong></span>
+                        <span>Confidence: <strong className="text-slate-200">{p.confidence}%</strong></span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-4">
+                      <div className="text-right">
+                        <div className="text-xl font-bold text-brand-400">{score}<span className="text-xs text-slate-500 font-normal">/100</span></div>
+                        <div className="text-[10px] text-slate-400 font-mono">{p.model}</div>
+                      </div>
+                      <span className="text-slate-500 text-lg">→</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {selectedProject && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-dark-card border border-dark-border rounded-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto p-6 text-slate-200">
+                <div className="flex justify-between items-start pb-4 border-b border-dark-border">
+                  <div>
+                    <h3 className="text-xl font-bold text-white">{selectedProject.name}</h3>
+                    <p className="text-xs text-slate-400 font-mono mt-0.5">Model: {selectedProject.model} • Target Price: {selectedProject.suggestedPrice}</p>
+                  </div>
+                  <button onClick={() => setSelectedProject(null)} className="text-slate-400 hover:text-white text-lg p-1">✕</button>
+                </div>
+
+                <div className="my-6">
+                  <h4 className="text-xs uppercase font-mono tracking-wider text-slate-400 mb-3">Minimum Sellable Scope Guard</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                    <div className="p-3 rounded-lg bg-emerald-950/20 border border-emerald-500/30">
+                      <span className="font-bold text-emerald-400 block mb-1">✓ Already Built</span>
+                      <ul className="list-disc list-inside space-y-1 text-slate-300">
+                        {selectedProject.scope?.built.map((b, i) => <li key={i}>{b}</li>)}
+                      </ul>
+                    </div>
+                    <div className="p-3 rounded-lg bg-amber-950/20 border border-amber-500/30">
+                      <span className="font-bold text-amber-400 block mb-1">! Required to Sell</span>
+                      <ul className="list-disc list-inside space-y-1 text-slate-300">
+                        {selectedProject.scope?.required.map((r, i) => <li key={i}>{r}</li>)}
+                      </ul>
+                    </div>
+                    <div className="p-3 rounded-lg bg-slate-900 border border-slate-700">
+                      <span className="font-bold text-slate-400 block mb-1">⏳ Can Wait</span>
+                      <ul className="list-disc list-inside space-y-1 text-slate-400">
+                        {selectedProject.scope?.wait.map((w, i) => <li key={i}>{w}</li>)}
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl bg-dark-bg border border-dark-border">
+                  <h4 className="text-xs font-mono uppercase tracking-wider text-brand-400 mb-2 font-bold">1-Click Launch Kit Package</h4>
+                  <p className="text-xs text-slate-300 mb-4">
+                    <strong>Value Proposition:</strong> {selectedProject.name} helps target users achieve their outcome without manual repetitive effort.
+                  </p>
+                  <button 
+                    onClick={() => {
+                      const md = `# Launch Kit: ${selectedProject.name}\n\n**Model:** ${selectedProject.model}\n**Target Price:** ${selectedProject.suggestedPrice}\n\n## Scope\n- Required: ${selectedProject.scope?.required.join(', ')}\n\n## Evidence\n${selectedProject.evidence?.map(e => `- [${e.type}] ${e.tag} ${e.text}`).join('\n')}`;
+                      navigator.clipboard.writeText(md);
+                      alert('Launch Kit copied as Markdown to clipboard!');
+                    }}
+                    className="w-full py-2.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white font-semibold text-xs transition"
+                  >
+                    Copy Complete Launch Kit (.md)
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {auditModalOpen && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-dark-card border border-dark-border rounded-2xl max-w-2xl w-full p-6 text-slate-200">
+                <div className="flex justify-between items-start pb-4 border-b border-dark-border">
+                  <h3 className="text-lg font-bold text-white">Truth & Methodology Invariants</h3>
+                  <button onClick={() => setAuditModalOpen(false)} className="text-slate-400 hover:text-white">✕</button>
+                </div>
+                <div className="mt-4 space-y-4 text-xs text-slate-300 leading-relaxed">
+                  <div>
+                    <h5 className="font-bold text-white">Deterministic Scoring Formula:</h5>
+                    <code className="block mt-1 p-2 rounded bg-dark-bg border border-dark-border font-mono text-brand-400">
+                      Launch Score = 0.35 * Readiness + 0.35 * Monetization + 0.20 * (100 - Effort) + 0.10 * Confidence
+                    </code>
+                  </div>
+                  <div>
+                    <h5 className="font-bold text-white">Local Privacy Guarantee:</h5>
+                    <p className="mt-1 text-slate-400">
+                      All parsing, token extraction, and file evaluations execute entirely inside your local browser runtime.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>
