@@ -28,6 +28,7 @@
   <script type="text/babel">
     const { useState, useEffect, useMemo } = React;
 
+    // ---------- Scoring Engine v1.0 ----------
     function calculateLaunchScore(readiness, monetization, effort, confidence) {
       const bounded = (val) => Math.max(0, Math.min(100, val || 0));
       const r = bounded(readiness);
@@ -36,6 +37,104 @@
       const c = bounded(confidence);
       const score = Math.round(0.35 * r + 0.35 * m + 0.20 * (100 - e) + 0.10 * c);
       return Math.max(0, Math.min(100, score));
+    }
+
+    // ---------- Deterministic heuristic analysis ----------
+    // All inputs are raw text/metadata actually retrieved from GitHub or pasted by user.
+    const LANG_MODEL_MAP = {
+      'JavaScript': { model: 'SaaS / Web Tool', price: '$9–19/mo' },
+      'TypeScript': { model: 'SaaS / Web Tool', price: '$9–29/mo' },
+      'Python':     { model: 'Developer Tool / CLI', price: '$9/mo or $49 lifetime' },
+      'Go':         { model: 'Developer Tool / CLI', price: '$29 lifetime license' },
+      'Rust':       { model: 'Developer Tool / CLI', price: '$29 lifetime license' },
+      'Solidity':   { model: 'Smart Contract / Protocol Utility', price: 'Gas-funded / $99 audit-ready kit' },
+      'HTML':       { model: 'Static Web Product / Template', price: '$19 one-time' },
+      'Shell':      { model: 'DevOps Automation Toolkit', price: '$15/mo' },
+      'Dart':       { model: 'Mobile App', price: '$4.99 or freemium' },
+      'Kotlin':     { model: 'Mobile App', price: '$4.99 or freemium' },
+      'Swift':      { model: 'Mobile App', price: '$4.99 or freemium' },
+      'Jupyter Notebook': { model: 'Data Science Toolkit / Courseware', price: '$29 one-time' }
+    };
+
+    const MONETIZATION_SIGNALS = [
+      { kw: ['api', 'sdk', 'library'], pts: 15, why: 'Reusable integration surface (API/SDK)' },
+      { kw: ['cli', 'command', 'terminal', 'tool'], pts: 12, why: 'Developer tool surface' },
+      { kw: ['dashboard', 'app', 'web', 'ui', 'site', 'landing'], pts: 14, why: 'End-user product surface' },
+      { kw: ['bot', 'agent', 'automation', 'harness', 'radar', 'monitor', 'scanner', 'tracker'], pts: 16, why: 'Automation/monitoring utility with recurring value' },
+      { kw: ['extension', 'plugin', 'addon'], pts: 13, why: 'Distributable extension surface' },
+      { kw: ['template', 'boilerplate', 'starter', 'kit'], pts: 11, why: 'Template product potential' },
+      { kw: ['course', 'tutorial', 'learning', 'education'], pts: 8, why: 'Educational content product' }
+    ];
+
+    function analyzeEvidence({ name, description, language, topics, readmeText, manifestFiles }) {
+      const evidence = [];
+      const hay = [
+        name || '', description || '', (topics || []).join(' '),
+        readmeText ? String(readmeText).slice(0, 6000) : ''
+      ].join(' ').toLowerCase();
+
+      if (description) {
+        evidence.push({ type: 'OBSERVED', tag: '[Repo Metadata]', text: `Description: "${String(description).slice(0,120)}"` });
+      }
+      if (language) {
+        evidence.push({ type: 'OBSERVED', tag: '[Repo Metadata]', text: `Primary language detected: ${language}` });
+      }
+      if (topics && topics.length) {
+        evidence.push({ type: 'OBSERVED', tag: '[Repo Metadata]', text: `Topics: ${topics.join(', ')}` });
+      }
+      if (readmeText) {
+        evidence.push({ type: 'OBSERVED', tag: '[README.md]', text: `README retrieved (${readmeText.length} chars) — first line: "${String(readmeText).trim().split('\n')[0].slice(0,100)}"` });
+      } else {
+        evidence.push({ type: 'INSUFFICIENT EVIDENCE', tag: '[README.md]', text: 'No README retrieved — monetization signal limited to metadata.' });
+      }
+
+      // Manifest detection from actual file tree
+      const files = manifestFiles || [];
+      let readiness = 40;
+      if (files.includes('package.json')) { readiness += 20; evidence.push({ type: 'OBSERVED', tag: '[package.json]', text: 'Node package manifest present in file tree.' }); }
+      if (files.includes('pyproject.toml')) { readiness += 18; evidence.push({ type: 'OBSERVED', tag: '[pyproject.toml]', text: 'Python project manifest present in file tree.' }); }
+      if (files.includes('Cargo.toml')) { readiness += 18; evidence.push({ type: 'OBSERVED', tag: '[Cargo.toml]', text: 'Rust crate manifest present in file tree.' }); }
+      if (files.includes('go.mod')) { readiness += 18; evidence.push({ type: 'OBSERVED', tag: '[go.mod]', text: 'Go module manifest present in file tree.' }); }
+      if (files.includes('requirements.txt') || files.includes('setup.py')) { readiness += 10; evidence.push({ type: 'OBSERVED', tag: '[requirements/setup]', text: 'Python dependency spec present in file tree.' }); }
+      if (files.includes('Dockerfile')) { readiness += 8; evidence.push({ type: 'OBSERVED', tag: '[Dockerfile]', text: 'Containerization present — deployability signal.' }); }
+      if (files.includes('index.html')) { readiness += 6; evidence.push({ type: 'OBSERVED', tag: '[file tree]', text: 'Web entrypoint present.' }); }
+      if (!files.length) {
+        evidence.push({ type: 'INSUFFICIENT EVIDENCE', tag: '[file tree]', text: 'File tree inaccessible or empty — readiness estimated from metadata only.' });
+        readiness = 35;
+      }
+
+      // Monetization scoring from observed signals
+      let monetization = language === 'HTML' ? 30 : 25;
+      for (const sig of MONETIZATION_SIGNALS) {
+        if (sig.kw.some(k => hay.includes(k))) { monetization += sig.pts; }
+      }
+
+      // Effort estimate from size/language
+      let effort = 45;
+      const langEffort = { 'Python': 35, 'JavaScript': 40, 'TypeScript': 38, 'HTML': 25, 'Shell': 30, 'Go': 50, 'Rust': 55, 'Solidity': 60 };
+      effort = langEffort[language] !== undefined ? langEffort[language] : 45;
+
+      // Confidence based on how much evidence we actually got
+      let confidence = 40;
+      if (description) confidence += 10;
+      if (readmeText) confidence += 15;
+      if (files.length) confidence += 15;
+      if ((topics||[]).length) confidence += 5;
+      confidence = Math.min(confidence, 95);
+
+      return {
+        evidence,
+        readiness: Math.min(readiness, 98),
+        monetization: Math.min(monetization, 92),
+        effort,
+        confidence
+      };
+    }
+
+    function triage(score) {
+      if (score >= 65) return 'HIGH PRIORITY';
+      if (score >= 45) return 'POSSIBLE';
+      return 'LOW PRIORITY';
     }
 
     const INITIAL_PROJECTS = [
@@ -95,6 +194,160 @@
       }
     ];
 
+    // ---------- GitHub public API client (no auth, no clone, no backend) ----------
+    async function ghFetch(url) {
+      const res = await fetch(url, { headers: { 'Accept': 'application/vnd.github+json' } });
+      return res;
+    }
+
+    async function scanGitHubUser(username, onProgress) {
+      const userRes = await ghFetch(`https://api.github.com/users/${encodeURIComponent(username)}`);
+      if (userRes.status === 404) throw new Error(`USER_NOT_FOUND:${username}`);
+      if (userRes.status === 403) throw new Error('RATE_LIMIT');
+      if (!userRes.ok) throw new Error(`NETWORK:${userRes.status}`);
+
+      const repos = [];
+      let page = 1;
+      while (true) {
+        onProgress && onProgress(`Fetching repositories page ${page}...`);
+        const rres = await ghFetch(`https://api.github.com/users/${encodeURIComponent(username)}/repos?per_page=100&sort=updated&page=${page}`);
+        if (rres.status === 403) throw new Error('RATE_LIMIT');
+        if (!rres.ok) throw new Error(`NETWORK:${rres.status}`);
+        const batch = await rres.json();
+        repos.push(...batch);
+        if (batch.length < 100 || page >= 5) break;
+        page++;
+      }
+
+      return { user: await userRes.json(), repos };
+    }
+
+    async function fetchRepoEvidence(repo, onProgress) {
+      const full = repo.full_name;
+      const ev = { files: [], readmeText: null, errors: [] };
+
+      try {
+        onProgress && onProgress(`${full}: reading file tree...`);
+        const cres = await ghFetch(`https://api.github.com/repos/${full}/contents/`);
+        if (cres.ok) {
+          const listing = await cres.json();
+          if (Array.isArray(listing)) ev.files = listing.map(f => f.name);
+        } else {
+          ev.errors.push(`contents/: ${cres.status === 403 ? 'rate-limited' : cres.status}`);
+        }
+
+        onProgress && onProgress(`${full}: reading README.md...`);
+        const rres = await ghFetch(`https://api.github.com/repos/${full}/readme`);
+        if (rres.ok) {
+          const rd = await rres.json();
+          if (rd.content) ev.readmeText = atob(rd.content.replace(/\n/g, '')).slice(0, 8000);
+        } else {
+          ev.errors.push(`README: ${rres.status === 403 ? 'rate-limited' : 'not found'}`);
+        }
+      } catch (err) {
+        ev.errors.push('network failure during evidence retrieval');
+      }
+
+      return ev;
+    }
+
+    function buildProjectFromRepo(repo, ev) {
+      const topics = repo.topics || [];
+      const a = analyzeEvidence({
+        name: repo.name,
+        description: repo.description,
+        language: repo.language,
+        topics,
+        readmeText: ev.readmeText,
+        manifestFiles: ev.files
+      });
+
+      const score = calculateLaunchScore(a.readiness, a.monetization, a.effort, a.confidence);
+      const tri = triage(score);
+      const lm = LANG_MODEL_MAP[repo.language] || { model: 'Open Source Project', price: 'Sponsorship / custom' };
+
+      const scopeBuilt = [];
+      const scopeRequired = ['Landing page + checkout flow'];
+      const scopeWait = ['Marketing site polish', 'Analytics'];
+      if (ev.files.includes('package.json')) scopeBuilt.push('Node package scaffolding');
+      if (ev.files.includes('pyproject.toml')) scopeBuilt.push('Python packaging scaffold');
+      if (ev.files.includes('index.html')) scopeBuilt.push('Web entrypoint exists');
+      if (ev.readmeText) scopeBuilt.push('Documentation draft (README)');
+      if (!scopeBuilt.length) scopeBuilt.push('Core source files present');
+
+      return {
+        id: 'gh-' + repo.id,
+        name: repo.name,
+        sourceType: 'GITHUB',
+        repoUrl: repo.html_url,
+        stars: repo.stargazers_count,
+        isFork: repo.fork,
+        readiness: a.readiness,
+        monetization: a.monetization,
+        effort: a.effort,
+        confidence: a.confidence,
+        launchScore: score,
+        priority: tri,
+        model: lm.model,
+        suggestedPrice: lm.price,
+        launchTime: score > 70 ? '1-2 Weeks' : '2-6 Weeks',
+        blocker: tri === 'HIGH PRIORITY' ? 'Checkout/payment integration' : (tri === 'POSSIBLE' ? 'Product positioning & packaging' : 'Validate demand before investing'),
+        evidence: a.evidence,
+        marketValScore: a.monetization,
+        valStatus: a.monetization >= 70 ? 'STRONG SIGNAL' : (a.monetization >= 50 ? 'PROMISING' : 'WEAK SIGNAL'),
+        gate: tri === 'HIGH PRIORITY' ? 'READY FOR BETA' : (tri === 'POSSIBLE' ? 'NEEDS POSITIONING' : 'INSUFFICIENT DEMAND SIGNAL'),
+        scope: { built: scopeBuilt, required: scopeRequired, wait: scopeWait }
+      };
+    }
+
+    function buildProjectFromPaste(title, text) {
+      const lower = text.slice(0, 20000).toLowerCase();
+      const files = [];
+      if (/package\.json/.test(lower)) files.push('package.json');
+      if (/pyproject\.toml|setup\.py/.test(lower)) files.push('pyproject.toml');
+      if (/cargo\.toml/.test(lower)) files.push('Cargo.toml');
+      if (/go\.mod/.test(lower)) files.push('go.mod');
+      if (/dockerfile/.test(lower)) files.push('Dockerfile');
+      if (/index\.html/.test(lower)) files.push('index.html');
+
+      const langGuess =
+        /solidity|contract /.test(lower) ? 'Solidity' :
+        /\bdef |\bimport |python/.test(lower) ? 'Python' :
+        /function |const |=>|javascript|node/.test(lower) ? 'JavaScript' :
+        /typescript/.test(lower) ? 'TypeScript' : null;
+
+      const a = analyzeEvidence({ name: title, description: null, language: langGuess, topics: [], readmeText: null, manifestFiles: files });
+      // Pasted content itself counts as strong direct evidence
+      a.evidence.unshift({ type: 'OBSERVED', tag: '[Pasted Input]', text: `${text.length.toLocaleString()} characters analyzed locally.` });
+      a.confidence = Math.min(a.confidence + 15, 95);
+
+      const score = calculateLaunchScore(a.readiness, a.monetization, a.effort, a.confidence);
+      const lm = LANG_MODEL_MAP[langGuess] || { model: 'Custom Product', price: 'TBD — validate pricing' };
+      const tri = triage(score);
+
+      return {
+        id: 'paste-' + Date.now(),
+        name: title,
+        sourceType: 'PASTE',
+        readiness: a.readiness,
+        monetization: a.monetization,
+        effort: a.effort,
+        confidence: a.confidence,
+        launchScore: score,
+        priority: tri,
+        model: lm.model,
+        suggestedPrice: lm.price,
+        launchTime: '1-3 Weeks',
+        blocker: 'Define minimum sellable scope & checkout',
+        evidence: a.evidence,
+        marketValScore: a.monetization,
+        valStatus: a.monetization >= 70 ? 'STRONG SIGNAL' : (a.monetization >= 50 ? 'PROMISING' : 'WEAK SIGNAL'),
+        gate: tri === 'HIGH PRIORITY' ? 'READY FOR BETA' : 'NEEDS POSITIONING',
+        scope: { built: ['Source/spec material provided'], required: ['Minimum sellable slice definition'], wait: ['Polish & scale'] }
+      };
+    }
+
+    // ---------- App ----------
     function App() {
       const [projects, setProjects] = useState(() => {
         const saved = localStorage.getItem('launchmine_v1_projects');
@@ -103,15 +356,31 @@
       const [selectedProject, setSelectedProject] = useState(null);
       const [auditModalOpen, setAuditModalOpen] = useState(false);
 
+      // Scan Public GitHub state
+      const [scanModalOpen, setScanModalOpen] = useState(false);
+      const [scanUsername, setScanUsername] = useState('');
+      const [scanStatus, setScanStatus] = useState(null); // {phase:'idle'|'loading'|'done'|'error', message}
+      const [scanResults, setScanResults] = useState(null);
+
+      // Analyze Existing Project state
+      const [pasteModalOpen, setPasteModalOpen] = useState(false);
+      const [pasteTitle, setPasteTitle] = useState('');
+      const [pasteText, setPasteText] = useState('');
+
+      // Analyze AI Conversation state
+      const [aiModalOpen, setAiModalOpen] = useState(false);
+      const [aiTitle, setAiTitle] = useState('');
+      const [aiText, setAiText] = useState('');
+
       useEffect(() => {
         localStorage.setItem('launchmine_v1_projects', JSON.stringify(projects));
       }, [projects]);
 
       const sortedProjects = useMemo(() => {
         return [...projects].sort((a, b) => {
-          const scoreA = calculateLaunchScore(a.readiness, a.monetization, a.effort, a.confidence);
-          const scoreB = calculateLaunchScore(b.readiness, b.monetization, b.effort, b.confidence);
-          return scoreB - scoreA;
+          const sa = a.launchScore !== undefined ? a.launchScore : calculateLaunchScore(a.readiness, a.monetization, a.effort, a.confidence);
+          const sb = b.launchScore !== undefined ? b.launchScore : calculateLaunchScore(b.readiness, b.monetization, b.effort, b.confidence);
+          return sb - sa;
         });
       }, [projects]);
 
@@ -148,6 +417,81 @@
         };
         reader.readAsText(file);
       };
+
+      const runScan = async () => {
+        const uname = scanUsername.trim();
+        if (!uname) {
+          setScanResults(null);
+          setScanStatus({ phase: 'error', message: 'Enter a GitHub username first.' });
+          return;
+        }
+        setScanStatus({ phase: 'loading', message: 'Scanning public repositories...' });
+        setScanResults(null);
+        try {
+          const { repos } = await scanGitHubUser(uname, (msg) => setScanStatus({ phase: 'loading', message: msg }));
+          if (!repos.length) {
+            setScanStatus({ phase: 'error', message: `User "${uname}" exists but has zero public repositories.` });
+            return;
+          }
+
+          const owned = repos.filter(r => !r.fork);
+          const candidates = (owned.length ? owned : repos)
+            .map(r => ({ ...r, _size: (r.description?1:0) + (r.language?1:0) }))
+            .sort((a,b) => b._size - a._size || b.stargazers_count - a.stargazers_count)
+            .slice(0, 8);
+
+          const results = [];
+          for (const repo of candidates) {
+            const ev = await fetchRepoEvidence(repo, (msg) => setScanStatus({ phase: 'loading', message: msg }));
+            results.push(buildProjectFromRepo(repo, ev));
+          }
+
+          const highCount = results.filter(r => r.priority === 'HIGH PRIORITY').length;
+          setScanResults(results);
+          setScanStatus({ phase: 'done', message: `Found ${repos.length} public repos. Triage complete: ${highCount} HIGH PRIORITY, ${results.filter(r=>r.priority==='POSSIBLE').length} POSSIBLE.` });
+        } catch (err) {
+          const m = String(err.message || err);
+          if (m.startsWith('USER_NOT_FOUND')) setScanStatus({ phase: 'error', message: `User not found: ${m.split(':')[1]}. Check spelling and try again.` });
+          else if (m === 'RATE_LIMIT') setScanStatus({ phase: 'error', message: 'GitHub API rate limit reached (unauthenticated limit: 60 req/hr). Try again later.' });
+          else setScanStatus({ phase: 'error', message: 'Network failure while contacting the GitHub API. Check your connection and retry.' });
+        }
+      };
+
+      const addScanToQueue = () => {
+        if (!scanResults) return;
+        const existing = new Set(projects.map(p => p.id));
+        const fresh = scanResults.filter(r => !existing.has(r.id));
+        setProjects(prev => [...prev, ...fresh]);
+        setScanModalOpen(false);
+        setSelectedProject(fresh[0] || null);
+      };
+
+      const runPasteAnalyze = () => {
+        if (!pasteText.trim()) return;
+        const p = buildProjectFromPaste(pasteTitle.trim() || 'Untitled Project Analysis', pasteText);
+        setProjects(prev => [...prev, p]);
+        setPasteModalOpen(false);
+        setPasteTitle(''); setPasteText('');
+        setSelectedProject(p);
+      };
+
+      const runAiAnalyze = () => {
+        if (!aiText.trim()) return;
+        // AI conversations are specs: same deterministic pipeline, different provenance label
+        const p = buildProjectFromPaste(aiTitle.trim() || 'AI Conversation Spec', aiText);
+        p.id = 'ai-' + Date.now();
+        p.sourceType = 'AI_CHAT';
+        p.evidence.unshift({ type: 'OBSERVED', tag: '[AI Transcript]', text: 'Extracted from pasted ChatGPT/Claude conversation transcript.' });
+        setProjects(prev => [...prev, p]);
+        setAiModalOpen(false);
+        setAiTitle(''); setAiText('');
+        setSelectedProject(p);
+      };
+
+      const priorityColor = (p) =>
+        p === 'HIGH PRIORITY' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' :
+        p === 'POSSIBLE' ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' :
+        'bg-slate-700/40 text-slate-400 border-slate-600';
 
       return (
         <div className="max-w-6xl mx-auto px-4 py-8">
@@ -201,7 +545,7 @@
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
             <button 
-              onClick={() => alert('Scan public repositories via unauthenticated GitHub API.')}
+              onClick={() => { setScanModalOpen(true); setScanStatus(null); setScanResults(null); }}
               className="p-4 rounded-xl bg-dark-card border border-dark-border hover:border-brand-500/50 text-left transition group"
             >
               <div className="text-sm font-semibold text-white group-hover:text-brand-400 flex items-center justify-between">
@@ -212,7 +556,7 @@
             </button>
 
             <button 
-              onClick={() => alert('Paste code files, README, or package.json for deterministic parsing.')}
+              onClick={() => setPasteModalOpen(true)}
               className="p-4 rounded-xl bg-dark-card border border-dark-border hover:border-brand-500/50 text-left transition group"
             >
               <div className="text-sm font-semibold text-white group-hover:text-brand-400 flex items-center justify-between">
@@ -223,7 +567,7 @@
             </button>
 
             <button 
-              onClick={() => alert('Paste ChatGPT or Claude transcripts to extract product specs.')}
+              onClick={() => setAiModalOpen(true)}
               className="p-4 rounded-xl bg-dark-card border border-dark-border hover:border-brand-500/50 text-left transition group"
             >
               <div className="text-sm font-semibold text-white group-hover:text-brand-400 flex items-center justify-between">
@@ -256,7 +600,7 @@
                 <div className="flex items-center gap-4">
                   <div className="text-center bg-dark-bg p-3 rounded-xl border border-dark-border min-w-[90px]">
                     <div className="text-2xl font-black text-brand-400">
-                      {calculateLaunchScore(sortedProjects[0].readiness, sortedProjects[0].monetization, sortedProjects[0].effort, sortedProjects[0].confidence)}
+                      {sortedProjects[0].launchScore !== undefined ? sortedProjects[0].launchScore : calculateLaunchScore(sortedProjects[0].readiness, sortedProjects[0].monetization, sortedProjects[0].effort, sortedProjects[0].confidence)}
                     </div>
                     <div className="text-[10px] font-mono text-slate-400 uppercase">Launch Score</div>
                   </div>
@@ -280,7 +624,7 @@
 
             <div className="grid grid-cols-1 gap-4">
               {sortedProjects.map((p) => {
-                const score = calculateLaunchScore(p.readiness, p.monetization, p.effort, p.confidence);
+                const score = p.launchScore !== undefined ? p.launchScore : calculateLaunchScore(p.readiness, p.monetization, p.effort, p.confidence);
                 return (
                   <div 
                     key={p.id}
@@ -288,11 +632,19 @@
                     className="p-5 rounded-xl bg-dark-card border border-dark-border hover:border-slate-600 cursor-pointer transition flex flex-col md:flex-row justify-between items-start md:items-center gap-4"
                   >
                     <div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-bold text-white text-base">{p.name}</span>
                         <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 font-mono">
                           {p.sourceType}
                         </span>
+                        {p.priority && (
+                          <span className={`text-[10px] px-2 py-0.5 rounded border font-mono ${priorityColor(p.priority)}`}>
+                            {p.priority}
+                          </span>
+                        )}
+                        {p.repoUrl && (
+                          <a href={p.repoUrl} target="_blank" rel="noreferrer" onClick={(e)=>e.stopPropagation()} className="text-[10px] text-brand-400 hover:underline font-mono">repo ↗</a>
+                        )}
                       </div>
                       <div className="text-xs text-slate-400 mt-2 flex flex-wrap gap-4 font-mono">
                         <span>Readiness: <strong className="text-slate-200">{p.readiness}%</strong></span>
@@ -315,13 +667,173 @@
             </div>
           </div>
 
+          {/* ---------- Scan Public GitHub Modal ---------- */}
+          {scanModalOpen && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-dark-card border border-dark-border rounded-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto p-6 text-slate-200">
+                <div className="flex justify-between items-start pb-4 border-b border-dark-border">
+                  <div>
+                    <h3 className="text-xl font-bold text-white">Scan Public GitHub</h3>
+                    <p className="text-xs text-slate-400 font-mono mt-0.5">Unauthenticated REST API • no OAuth • no cloning • read-only metadata</p>
+                  </div>
+                  <button onClick={() => setScanModalOpen(false)} className="text-slate-400 hover:text-white text-lg p-1">✕</button>
+                </div>
+
+                <div className="mt-4 flex gap-2">
+                  <input
+                    type="text"
+                    value={scanUsername}
+                    onChange={(e) => setScanUsername(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && scanStatus?.phase !== 'loading') runScan(); }}
+                    placeholder="GitHub username (e.g. fliptrigga13)"
+                    className="flex-1 px-3 py-2 rounded-lg bg-dark-bg border border-dark-border focus:border-brand-500 outline-none text-sm text-white placeholder-slate-500"
+                  />
+                  <button
+                    onClick={runScan}
+                    disabled={scanStatus?.phase === 'loading'}
+                    className="px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white font-semibold text-xs transition whitespace-nowrap"
+                  >
+                    {scanStatus?.phase === 'loading' ? 'Scanning...' : 'Scan Repositories'}
+                  </button>
+                </div>
+
+                {scanStatus?.phase === 'loading' && (
+                  <div className="mt-4 p-3 rounded-lg bg-brand-950/30 border border-brand-500/30 text-xs text-brand-300 font-mono animate-pulse">
+                    ⏳ Scanning public repositories...
+                    <div className="mt-1 text-slate-400 normal-case">{scanStatus.message}</div>
+                  </div>
+                )}
+
+                {scanStatus?.phase === 'error' && (
+                  <div className="mt-4 p-3 rounded-lg bg-red-950/30 border border-red-500/40 text-xs text-red-300 font-mono">
+                    ✕ {scanStatus.message}
+                  </div>
+                )}
+
+                {scanStatus?.phase === 'done' && (
+                  <div className="mt-4 p-3 rounded-lg bg-emerald-950/20 border border-emerald-500/30 text-xs text-emerald-300 font-mono">
+                    ✓ {scanStatus.message}
+                  </div>
+                )}
+
+                {scanResults && (
+                  <div className="mt-4 space-y-2">
+                    <div className="flex justify-between items-center">
+                      <h4 className="text-xs uppercase font-mono tracking-wider text-slate-400">Triage Results</h4>
+                      <button
+                        onClick={addScanToQueue}
+                        className="px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white font-semibold text-xs transition"
+                      >
+                        Add {scanResults.length} Opportunities to Queue
+                      </button>
+                    </div>
+                    {scanResults.map(r => (
+                      <div key={r.id} className="p-3 rounded-lg bg-dark-bg border border-dark-border flex justify-between items-center text-xs">
+                        <div>
+                          <span className="font-semibold text-white">{r.name}</span>
+                          <span className={`ml-2 px-1.5 py-0.5 rounded border font-mono ${priorityColor(r.priority)}`}>{r.priority}</span>
+                          <div className="text-slate-500 mt-1 font-mono">
+                            score {r.launchScore}/100 • {r.model} • conf {r.confidence}%
+                            {r.isFork ? ' • fork' : ''}
+                          </div>
+                        </div>
+                        <a href={r.repoUrl} target="_blank" rel="noreferrer" className="text-brand-400 hover:underline font-mono">repo ↗</a>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ---------- Analyze Existing Project Modal ---------- */}
+          {pasteModalOpen && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-dark-card border border-dark-border rounded-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto p-6 text-slate-200">
+                <div className="flex justify-between items-start pb-4 border-b border-dark-border">
+                  <div>
+                    <h3 className="text-xl font-bold text-white">Analyze Existing Project</h3>
+                    <p className="text-xs text-slate-400 font-mono mt-0.5">All parsing runs locally in your browser.</p>
+                  </div>
+                  <button onClick={() => setPasteModalOpen(false)} className="text-slate-400 hover:text-white text-lg p-1">✕</button>
+                </div>
+                <input
+                  type="text"
+                  value={pasteTitle}
+                  onChange={(e) => setPasteTitle(e.target.value)}
+                  placeholder="Project name"
+                  className="mt-4 w-full px-3 py-2 rounded-lg bg-dark-bg border border-dark-border focus:border-brand-500 outline-none text-sm text-white placeholder-slate-500"
+                />
+                <textarea
+                  value={pasteText}
+                  onChange={(e) => setPasteText(e.target.value)}
+                  placeholder={'Paste package.json, README, code snippets, or any project material here...\n\nDetected signals: manifests (package.json, pyproject.toml, Cargo.toml, go.mod), language keywords, and product-surface keywords (api, cli, dashboard, bot, extension...).'}
+                  rows={12}
+                  className="mt-3 w-full px-3 py-2 rounded-lg bg-dark-bg border border-dark-border focus:border-brand-500 outline-none text-xs font-mono text-slate-200 placeholder-slate-500"
+                />
+                <button
+                  onClick={runPasteAnalyze}
+                  disabled={!pasteText.trim()}
+                  className="w-full mt-3 py-2.5 rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white font-semibold text-xs transition"
+                >
+                  Analyze & Add to Opportunity Queue
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ---------- Analyze AI Conversation Modal ---------- */}
+          {aiModalOpen && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-dark-card border border-dark-border rounded-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto p-6 text-slate-200">
+                <div className="flex justify-between items-start pb-4 border-b border-dark-border">
+                  <div>
+                    <h3 className="text-xl font-bold text-white">Analyze AI Conversation</h3>
+                    <p className="text-xs text-slate-400 font-mono mt-0.5">Turn old ChatGPT/Claude transcripts into launch plans — parsed locally.</p>
+                  </div>
+                  <button onClick={() => setAiModalOpen(false)} className="text-slate-400 hover:text-white text-lg p-1">✕</button>
+                </div>
+                <input
+                  type="text"
+                  value={aiTitle}
+                  onChange={(e) => setAiTitle(e.target.value)}
+                  placeholder="Spec name (optional)"
+                  className="mt-4 w-full px-3 py-2 rounded-lg bg-dark-bg border border-dark-border focus:border-brand-500 outline-none text-sm text-white placeholder-slate-500"
+                />
+                <textarea
+                  value={aiText}
+                  onChange={(e) => setAiText(e.target.value)}
+                  placeholder="Paste the conversation transcript containing your product spec..."
+                  rows={12}
+                  className="mt-3 w-full px-3 py-2 rounded-lg bg-dark-bg border border-dark-border focus:border-brand-500 outline-none text-xs font-mono text-slate-200 placeholder-slate-500"
+                />
+                <button
+                  onClick={runAiAnalyze}
+                  disabled={!aiText.trim()}
+                  className="w-full mt-3 py-2.5 rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white font-semibold text-xs transition"
+                >
+                  Extract Product Spec & Add to Queue
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ---------- Opportunity Detail Modal ---------- */}
           {selectedProject && (
             <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
               <div className="bg-dark-card border border-dark-border rounded-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto p-6 text-slate-200">
                 <div className="flex justify-between items-start pb-4 border-b border-dark-border">
                   <div>
                     <h3 className="text-xl font-bold text-white">{selectedProject.name}</h3>
-                    <p className="text-xs text-slate-400 font-mono mt-0.5">Model: {selectedProject.model} • Target Price: {selectedProject.suggestedPrice}</p>
+                    <p className="text-xs text-slate-400 font-mono mt-0.5">
+                      Model: {selectedProject.model} • Target Price: {selectedProject.suggestedPrice}
+                      {selectedProject.repoUrl && <> • <a href={selectedProject.repoUrl} target="_blank" rel="noreferrer" className="text-brand-400 hover:underline">{selectedProject.repoUrl.replace('https://github.com/','')}</a></>}
+                    </p>
+                    {selectedProject.priority && (
+                      <span className={`inline-block mt-2 text-[10px] px-2 py-0.5 rounded border font-mono ${priorityColor(selectedProject.priority)}`}>
+                        {selectedProject.priority}
+                      </span>
+                    )}
                   </div>
                   <button onClick={() => setSelectedProject(null)} className="text-slate-400 hover:text-white text-lg p-1">✕</button>
                 </div>
@@ -332,23 +844,46 @@
                     <div className="p-3 rounded-lg bg-emerald-950/20 border border-emerald-500/30">
                       <span className="font-bold text-emerald-400 block mb-1">✓ Already Built</span>
                       <ul className="list-disc list-inside space-y-1 text-slate-300">
-                        {selectedProject.scope?.built.map((b, i) => <li key={i}>{b}</li>)}
+                        {(selectedProject.scope?.built || []).map((b, i) => <li key={i}>{b}</li>)}
                       </ul>
                     </div>
                     <div className="p-3 rounded-lg bg-amber-950/20 border border-amber-500/30">
                       <span className="font-bold text-amber-400 block mb-1">! Required to Sell</span>
                       <ul className="list-disc list-inside space-y-1 text-slate-300">
-                        {selectedProject.scope?.required.map((r, i) => <li key={i}>{r}</li>)}
+                        {(selectedProject.scope?.required || []).map((r, i) => <li key={i}>{r}</li>)}
                       </ul>
                     </div>
                     <div className="p-3 rounded-lg bg-slate-900 border border-slate-700">
                       <span className="font-bold text-slate-400 block mb-1">⏳ Can Wait</span>
                       <ul className="list-disc list-inside space-y-1 text-slate-400">
-                        {selectedProject.scope?.wait.map((w, i) => <li key={i}>{w}</li>)}
+                        {(selectedProject.scope?.wait || []).map((w, i) => <li key={i}>{w}</li>)}
                       </ul>
                     </div>
                   </div>
                 </div>
+
+                {selectedProject.evidence && selectedProject.evidence.length > 0 && (
+                  <div className="my-6">
+                    <h4 className="text-xs uppercase font-mono tracking-wider text-slate-400 mb-3">Evidence Trail (provenance)</h4>
+                    <div className="space-y-1.5 text-xs">
+                      {selectedProject.evidence.map((e, i) => (
+                        <div key={i} className={`p-2 rounded-lg border ${
+                          e.type === 'INSUFFICIENT EVIDENCE' ? 'bg-orange-950/20 border-orange-500/30' :
+                          e.type === 'ASSUMPTION' ? 'bg-purple-950/20 border-purple-500/30' :
+                          'bg-dark-bg border-dark-border'
+                        }`}>
+                          <span className={`font-mono font-bold mr-2 ${
+                            e.type === 'INSUFFICIENT EVIDENCE' ? 'text-orange-400' :
+                            e.type === 'ASSUMPTION' ? 'text-purple-400' :
+                            e.type === 'INFERRED' ? 'text-indigo-400' : 'text-emerald-400'
+                          }`}>[{e.type}]</span>
+                          <span className="font-mono text-slate-400 mr-2">{e.tag}</span>
+                          <span className="text-slate-300">{e.text}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 <div className="p-4 rounded-xl bg-dark-bg border border-dark-border">
                   <h4 className="text-xs font-mono uppercase tracking-wider text-brand-400 mb-2 font-bold">1-Click Launch Kit Package</h4>
@@ -357,9 +892,16 @@
                   </p>
                   <button 
                     onClick={() => {
-                      const md = `# Launch Kit: ${selectedProject.name}\n\n**Model:** ${selectedProject.model}\n**Target Price:** ${selectedProject.suggestedPrice}\n\n## Scope\n- Required: ${selectedProject.scope?.required.join(', ')}\n\n## Evidence\n${selectedProject.evidence?.map(e => `- [${e.type}] ${e.tag} ${e.text}`).join('\n')}`;
-                      navigator.clipboard.writeText(md);
-                      alert('Launch Kit copied as Markdown to clipboard!');
+                      const md = `# Launch Kit: ${selectedProject.name}\n\n**Model:** ${selectedProject.model}\n**Target Price:** ${selectedProject.suggestedPrice}\n**Priority:** ${selectedProject.priority || 'N/A'}\n${selectedProject.repoUrl ? `**Repo:** ${selectedProject.repoUrl}\n` : ''}\n## Scope\n- Required: ${(selectedProject.scope?.required||[]).join(', ')}\n\n## Evidence\n${(selectedProject.evidence||[]).map(e => `- [${e.type}] ${e.tag} ${e.text}`).join('\n')}`;
+                      navigator.clipboard.writeText(md).then(
+                        () => alert('Launch Kit copied as Markdown to clipboard!'),
+                        () => {
+                          const ta = document.createElement('textarea');
+                          ta.value = md; document.body.appendChild(ta); ta.select();
+                          document.execCommand('copy'); document.body.removeChild(ta);
+                          alert('Launch Kit copied as Markdown to clipboard!');
+                        }
+                      );
                     }}
                     className="w-full py-2.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white font-semibold text-xs transition"
                   >
@@ -370,6 +912,7 @@
             </div>
           )}
 
+          {/* ---------- Truth & Methodology Modal ---------- */}
           {auditModalOpen && (
             <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
               <div className="bg-dark-card border border-dark-border rounded-2xl max-w-2xl w-full p-6 text-slate-200">
@@ -380,14 +923,35 @@
                 <div className="mt-4 space-y-4 text-xs text-slate-300 leading-relaxed">
                   <div>
                     <h5 className="font-bold text-white">Deterministic Scoring Formula:</h5>
-                    <code className="block mt-1 p-2 rounded bg-dark-bg border border-dark-border font-mono text-brand-400">
+                    <code className="block mt-1 p-2 rounded bg-dark-bg border border-dark-border font-mono text-brand-400 overflow-x-auto">
                       Launch Score = 0.35 * Readiness + 0.35 * Monetization + 0.20 * (100 - Effort) + 0.10 * Confidence
                     </code>
+                  </div>
+                  <div>
+                    <h5 className="font-bold text-white">Triage Thresholds:</h5>
+                    <p className="mt-1 text-slate-400 font-mono">
+                      HIGH PRIORITY ≥ 65 • POSSIBLE ≥ 45 • LOW PRIORITY &lt; 45
+                    </p>
+                  </div>
+                  <div>
+                    <h5 className="font-bold text-white">Provenance Guarantee:</h5>
+                    <p className="mt-1 text-slate-400">
+                      Every opportunity records what was ACTUALLY retrieved (Repo Metadata, README.md, package.json, pyproject.toml, file tree, pasted input).
+                      Unavailable sources produce an INSUFFICIENT EVIDENCE entry — never fabricated observations.
+                    </p>
                   </div>
                   <div>
                     <h5 className="font-bold text-white">Local Privacy Guarantee:</h5>
                     <p className="mt-1 text-slate-400">
                       All parsing, token extraction, and file evaluations execute entirely inside your local browser runtime.
+                      The only network calls made are read-only requests to api.github.com.
+                      No repository is cloned, no repository code is executed, no OAuth is required, and there is no backend server.
+                    </p>
+                  </div>
+                  <div>
+                    <h5 className="font-bold text-white">Demo vs Real:</h5>
+                    <p className="mt-1 text-slate-400 font-mono">
+                      sourceType DEMO = bundled example • GITHUB = live API scan • PASTE = user-provided input • AI_CHAT = transcript extraction
                     </p>
                   </div>
                 </div>
@@ -398,7 +962,7 @@
       );
     }
 
-    ReactDOM.render(<App />, document.getElementById('root'));
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
   </script>
 </body>
 </html>
